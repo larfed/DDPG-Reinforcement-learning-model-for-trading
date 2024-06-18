@@ -1,0 +1,176 @@
+##########################
+###environments.py
+##########################
+
+tf.compat.v1.enable_v2_behavior()
+
+#class defines the reinforcement learning environment
+class AssetTradingEnv(py_environment.PyEnvironment):
+
+
+    def __init__(self):
+        self._action_spec = array_spec.BoundedArraySpec(
+            (len(CONFIG_INSTRUMENTS)+1,), np.float64, minimum=0, maximum=1, name='action')
+        self._observation_spec = array_spec.BoundedArraySpec(
+            shape=(len(CONFIG_OBS_COLS),), dtype=np.float64, \
+                     name='observation')
+        self.reset()
+        self._episode_ended = False
+        self.us_bd = CustomBusinessDay(calendar=USFederalHolidayCalendar())
+
+    def action_spec(self):
+        return self._action_spec
+
+    def observation_spec(self):
+        return self._observation_spec
+
+    def _reset(self):
+        self.memory_return = pd.DataFrame(columns=[t+"_close" for t in CONFIG_INSTRUMENTS])
+        self._episode_ended = False
+        self.index = 0
+        self.time_delta = pd.Timedelta(1,unit='D')
+        self.init_cash = 1000000
+        self.current_cash = self.init_cash
+        self.current_value = self.init_cash
+        self.previous_price = {}
+        self.old_dict_instrument_price_1 = {}
+        self.old_dict_instrument_price_2 = {}
+
+        self.money_split_ratio = np.zeros((len(CONFIG_INSTRUMENTS)+1))
+        self.money_split_ratio[0] = 1
+
+        self.df = pd.read_csv(CONFIG_FILE)
+        self.scaler = preprocessing.StandardScaler()
+
+        self.df["date"] = self.df["date"].apply(lambda x: pd.Timestamp(x, unit='s', tz='US/Pacific'))
+        self.df = self.df[self.df["instrument"].isin(CONFIG_INSTRUMENTS)].sort_values("date")
+        self.scaler.fit(self.df[CONFIG_SCOLS].values)
+        self.df = self.df.reset_index(drop=True)
+
+        self.max_index = self.df.shape[0]
+        start_point = (np.random.choice(np.arange(3,self.max_index - CONFIG_EPISODE_LENGTH))//3) *3
+        end_point = start_point + CONFIG_EPISODE_LENGTH//3 *3
+        self.df = self.df.loc[start_point:end_point+2].reset_index(drop=True)
+
+
+        self.df = self.df.reset_index(drop=True)
+
+
+        self.init_time = self.df.loc[0,"date"]
+        self.current_time = self.init_time
+        self.dfslice = self.df[(self.df["instrument"].isin(CONFIG_INSTRUMENTS))&(self.df["date"]>=self.current_time)&(self.df["date"]= self.current_time) &
+                (self.df["date"] < self.current_time + pd.Timedelta(1, unit='D'))
+            ].copy().drop_duplicates("instrument")
+
+
+
+            # Check if dfslice is empty, and if so, continue to the next valid business day
+            if not self.dfslice.empty:
+                break
+
+        # print("DataFrame shape after slicing:", self.dfslice.shape)
+        self.previous_value = self.current_value
+        self.current_stock_money_distribution,self.current_value  = self.calculate_money_from_num_stocks()
+        self.money_split_ratio = self.normalize_money_dist()
+        self.step_reward = (self.current_value - self.previous_value) / self.previous_value  # CHANGE FOR RELATIVE OR ABSOLUTE RETURNS
+        # self.step_reward = np.min([self.step_reward,0.25])
+
+
+    def get_observations(self):
+        dfslice = self.dfslice
+        dfs = pd.DataFrame()
+        for i,grp in dfslice.groupby("instrument"):
+            tempdf = pd.DataFrame(self.scaler.transform(grp[CONFIG_SCOLS].values))
+            tempdf.columns = [i+"_"+c for c in CONFIG_SCOLS]
+            if dfs.empty:
+                dfs = tempdf
+            else:
+                dfs = dfs.merge(tempdf,right_index=True,left_index=True,how='inner')
+
+        return dfs
+    def get_observations_unscaled(self):
+        dfslice = self.dfslice
+        dfs = pd.DataFrame()
+        for i,grp in dfslice.groupby("instrument"):
+            tempdf = pd.DataFrame(grp[CONFIG_COLS].values)
+            tempdf.columns = [i+"_"+c for c in CONFIG_COLS]
+            if dfs.empty:
+                dfs = tempdf
+            else:
+                dfs = dfs.merge(tempdf,right_index=True,left_index=True,how='inner')
+
+        self.memory_return = pd.concat([self.memory_return,dfs[[t+"_close" for t in CONFIG_INSTRUMENTS]]],ignore_index=True)
+
+        return dfs
+    def calculate_actual_shares_from_money_split(self):
+        dict_instrument_price = self.dfslice[["instrument","open"]]\
+                        .set_index("instrument").to_dict()["open"]
+
+        num_shares = []
+        for i,c in enumerate(CONFIG_INSTRUMENTS):
+            if c in dict_instrument_price:
+                num_shares.append( self.money_split_ratio[i+1]*self.current_value//dict_instrument_price[c] )
+            else:
+                num_shares.append( self.money_split_ratio[i+1]*self.current_value//self.old_dict_instrument_price_1[c] )
+
+        self.current_cash = self.money_split_ratio[0]*self.current_value
+        for c in dict_instrument_price:
+            self.old_dict_instrument_price_1[c] = dict_instrument_price[c]
+
+        return num_shares
+    def calculate_money_from_num_stocks(self):
+        money_dist = []
+        money_dist.append(self.current_cash)
+        dict_instrument_price = self.dfslice[["instrument","open"]]\
+                        .set_index("instrument").to_dict()["open"]
+        for i,c in enumerate(CONFIG_INSTRUMENTS):
+            if c in dict_instrument_price:
+                money_dist.append(self.current_stock_num_distribution[i]*dict_instrument_price[c])
+            else:
+                money_dist.append(self.current_stock_num_distribution[i]*self.old_dict_instrument_price_2[c])
+
+        for c in dict_instrument_price:
+            self.old_dict_instrument_price_2[c] = dict_instrument_price[c]
+        return money_dist,sum(money_dist)
+    def normalize_money_dist(self):
+        normal = []
+
+        for i,c in enumerate(self.current_stock_money_distribution):
+            normal.append(c/self.current_value)
+        return normal
+     
+
+##########################
+###utils.py
+##########################
+
+def compute_avg_return(environment, policy, num_episodes=10):
+
+        total_return = 0.0
+        for _ in range(num_episodes):
+
+            time_step = environment.reset()
+            episode_return = 0.0
+            counter = 0
+            while not time_step.is_last():
+                action_step = policy.action(time_step)
+                time_step = environment.step(action_step.action)
+                episode_return += time_step.reward
+
+                counter+=1
+            total_return += episode_return
+
+        avg_return = total_return / num_episodes
+        return avg_return.numpy()[0]
+
+def collect_step(environment, policy, buffer):
+        time_step = environment.current_time_step()
+        action_step = policy.action(time_step)
+        next_time_step = environment.step(action_step.action)
+        traj = trajectory.from_transition(time_step, action_step, next_time_step)
+
+        # Add trajectory to the replay buffer
+        buffer.add_batch(traj)
+def collect_data(env, policy, buffer, steps):
+        for _ in range(steps):
+            collect_step(env, policy, buffer)
