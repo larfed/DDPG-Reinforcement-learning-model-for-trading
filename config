@@ -1,0 +1,150 @@
+
+##########################
+###some libraries and imports
+##########################
+!pip install --upgrade -q tensorflow #needs to be 2.15
+#one more library
+!pip install -q tf-agents
+
+## import needed packages
+
+import tensorflow as tf
+import numpy as np
+import pandas as pd
+import os
+import matplotlib.pyplot as plt
+from sklearn import preprocessing
+from tqdm import tqdm
+from tf_agents.environments import py_environment
+from tf_agents.environments import tf_environment
+from tf_agents.environments import tf_py_environment
+from tf_agents.environments import utils
+from tf_agents.specs import array_spec
+from tf_agents.environments import wrappers
+from tf_agents.environments import suite_gym
+from tf_agents.trajectories import time_step as ts
+from tf_agents.policies.policy_saver import PolicySaver
+from tf_agents.agents.ddpg import actor_network
+from tf_agents.agents.ddpg import critic_network
+from tf_agents.agents.ddpg import ddpg_agent
+from tf_agents.agents.dqn import dqn_agent
+from tf_agents.drivers import dynamic_step_driver
+from tf_agents.environments import suite_gym
+from tf_agents.environments import tf_py_environment
+from tf_agents.eval import metric_utils
+from tf_agents.metrics import tf_metrics
+from tf_agents.networks import q_network
+from tf_agents.policies import random_tf_policy
+from tf_agents.replay_buffers import tf_uniform_replay_buffer
+from tf_agents.trajectories import trajectory
+from tf_agents.trajectories import policy_step
+from tf_agents.utils import common
+import logging
+from pandas.tseries.holiday import USFederalHolidayCalendar
+from pandas.tseries.offsets import CustomBusinessDay
+
+
+
+
+% ##########################
+###config.py: HYPERPARAMETERS
+##########################
+
+# Number of training iterations
+CONFIG_NUM_ITERATIONS = 100
+# Number of steps in each episode, specifies the number of time steps or interactions that make up a single episode in the reinforcement learning environment.
+CONFIG_EPISODE_LENGTH = 100
+# Number of steps to collect data in each iteration, determines the number of steps the agent will take in the environment to collect experiences during each iteration of the training loop.
+CONFIG_COLLECT_STEPS_PER_ITERATION = 750
+
+##############################
+# Maximum length of the replay buffer
+CONFIG_REPLAY_BUFFER_MAX_LENGTH = 100
+# Batch size for training
+CONFIG_BATCH_SIZE = 100
+# Number of episodes for evaluation
+CONFIG_NUM_EVAL_EPISODES = 4
+###############################
+ # Logging frequency, log training information every X steps
+CONFIG_LOG_INTERVAL = 3
+# Evaluation frequency, evaluate the agent every X steps
+CONFIG_EVAL_INTERVAL = 3
+# Frequency to save the model, save the model every X steps
+CONFIG_MODEL_SAVE_FREQ = 3
+# Fully connected layers for the actor network
+CONFIG_actor_fc_layers=(200, 100)
+# Fully connected layers for the critic network's observation branch
+CONFIG_critic_obs_fc_layers=(200,)
+# Fully connected layers for the critic network's action branch
+CONFIG_critic_action_fc_layers=None
+# Fully connected layers for the joint critic network
+CONFIG_critic_joint_fc_layers=(150,)
+# Standard deviation for Ornstein-Uhlenbeck noise
+CONFIG_ou_stddev=0.5
+# Damping factor for Ornstein-Uhlenbeck noise
+CONFIG_ou_damping=0.3
+# Soft update coefficient for target networks
+CONFIG_target_update_tau=0.001
+# Update target networks every 15 steps
+CONFIG_target_update_period=15
+# Clipping value for gradients with respect to actions
+CONFIG_dqda_clipping=None
+# Loss function for TD errors # TRY MSE
+CONFIG_td_errors_loss_fn=tf.compat.v1.losses.huber_loss
+# Discount factor
+CONFIG_gamma=0.15
+# Scaling factor for rewards
+CONFIG_reward_scale_factor=1
+# Clipping value for gradients during training
+CONFIG_gradient_clipping=None
+# Learning rate for the actor network
+CONFIG_actor_learning_rate=1e-4
+# Learning rate for the critic network
+CONFIG_critic_learning_rate=1e-3
+###############################
+# Enable debug summaries
+CONFIG_debug_summaries=False
+# Summarize gradients and variables during training
+CONFIG_summarize_grads_and_vars=False
+###############################
+# storage directories
+CONFIG_LOGDIR="LOGDIR"
+CONFIG_MODEL_SAVE = "model_save"
+
+
+##########################
+###config.py: ASSETS
+##########################
+
+CONFIG_FILE = "train_data.csv"
+CONFIG_INSTRUMENTS_placeholder = ['ASST1', 'ASST2', 'ASST3']
+CONFIG_INSTRUMENTS = CONFIG_TARGET_INSTRUMENTS
+CONFIG_COLS = ['high', 'low', 'open', 'close', 'volume', 'quoteVolume', 'weightedAverage']
+CONFIG_SCOLS = ['vh', 'vl', 'vc', 'open_s', 'volume_s', 'quoteVolume_s', 'weightedAverage_s', 'vh_roll_7', \
+                'vh_roll_14', 'vh_roll_30', 'vl_roll_7', 'vl_roll_14', 'vl_roll_30', 'vc_roll_7', 'vc_roll_14', 'vc_roll_30', \
+                'open_s_roll_7', 'open_s_roll_14', 'open_s_roll_30', 'volume_s_roll_7', 'volume_s_roll_14', 'volume_s_roll_30', \
+                'quoteVolume_s_roll_7', 'quoteVolume_s_roll_14', 'quoteVolume_s_roll_30', 'weightedAverage_s_roll_7', \
+                'weightedAverage_s_roll_14', 'weightedAverage_s_roll_30']
+CONFIG_OBS_COLS = ['ASST1_vh', 'ASST2_vh', 'ASST3_vh', 'ASST1_vl', 'ASST2_vl', 'ASST3_vl', 'ASST1_vc', 'ASST2_vc', 'ASST3_vc', \
+    'ASST1_open_s', 'ASST2_open_s', 'ASST3_open_s', 'ASST1_volume_s', 'ASST2_volume_s', 'ASST3_volume_s', 'ASST1_quoteVolume_s', \
+        'ASST2_quoteVolume_s', 'ASST3_quoteVolume_s', 'ASST1_weightedAverage_s', 'ASST2_weightedAverage_s', 'ASST3_weightedAverage_s', \
+            'ASST1_vh_roll_7', 'ASST2_vh_roll_7', 'ASST3_vh_roll_7', 'ASST1_vh_roll_14', 'ASST2_vh_roll_14', 'ASST3_vh_roll_14', \
+                'ASST1_vh_roll_30', 'ASST2_vh_roll_30', 'ASST3_vh_roll_30', 'ASST1_vl_roll_7', 'ASST2_vl_roll_7', 'ASST3_vl_roll_7', \
+                    'ASST1_vl_roll_14', 'ASST2_vl_roll_14', 'ASST3_vl_roll_14', 'ASST1_vl_roll_30', 'ASST2_vl_roll_30', 'ASST3_vl_roll_30', \
+                        'ASST1_vc_roll_7', 'ASST2_vc_roll_7', 'ASST3_vc_roll_7', 'ASST1_vc_roll_14', 'ASST2_vc_roll_14', 'ASST3_vc_roll_14', \
+                            'ASST1_vc_roll_30', 'ASST2_vc_roll_30', 'ASST3_vc_roll_30', 'ASST1_open_s_roll_7', 'ASST2_open_s_roll_7', \
+                                'ASST3_open_s_roll_7', 'ASST1_open_s_roll_14', 'ASST2_open_s_roll_14', 'ASST3_open_s_roll_14', 'ASST1_open_s_roll_30', \
+                                    'ASST2_open_s_roll_30', 'ASST3_open_s_roll_30', 'ASST1_volume_s_roll_7', 'ASST2_volume_s_roll_7', 'ASST3_volume_s_roll_7', \
+                                        'ASST1_volume_s_roll_14', 'ASST2_volume_s_roll_14', 'ASST3_volume_s_roll_14', 'ASST1_volume_s_roll_30',\
+                                             'ASST2_volume_s_roll_30', 'ASST3_volume_s_roll_30', 'ASST1_quoteVolume_s_roll_7', 'ASST2_quoteVolume_s_roll_7', \
+                                                 'ASST3_quoteVolume_s_roll_7', 'ASST1_quoteVolume_s_roll_14', 'ASST2_quoteVolume_s_roll_14', \
+                                                     'ASST3_quoteVolume_s_roll_14', 'ASST1_quoteVolume_s_roll_30', 'ASST2_quoteVolume_s_roll_30', \
+                                                         'ASST3_quoteVolume_s_roll_30', 'ASST1_weightedAverage_s_roll_7', 'ASST2_weightedAverage_s_roll_7', \
+                                                             'ASST3_weightedAverage_s_roll_7', 'ASST1_weightedAverage_s_roll_14', 'ASST2_weightedAverage_s_roll_14',\
+                                                                  'ASST3_weightedAverage_s_roll_14', 'ASST1_weightedAverage_s_roll_30', 'ASST2_weightedAverage_s_roll_30', 'ASST3_weightedAverage_s_roll_30']
+# Perform the replacement of placeholders.
+CONFIG_OBS_COLS = [col.replace(placeholder, instrument) for col, placeholder, instrument in zip(CONFIG_OBS_COLS, CONFIG_INSTRUMENTS_placeholder * len(CONFIG_OBS_COLS), CONFIG_INSTRUMENTS * len(CONFIG_OBS_COLS))]
+
+#####################################################
+# Checkining contets of CONFIG_OBS_COLS
+inline_string = ', '.join(CONFIG_OBS_COLS)
