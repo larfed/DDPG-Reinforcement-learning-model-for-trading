@@ -1,0 +1,85 @@
+
+############################################################
+##cleaned.csv formation
+############################################################
+
+
+import pandas as pd
+import yfinance as yf
+
+
+CONFIG_TARGET_INSTRUMENTS = ['WMT', 'KO', 'NEE']
+start_date = "2004-01-01"
+end_date = "2024-01-01"
+cut_off_date = pd.Timestamp("2023-01-01", tz='US/Pacific') ## CUT DATE FOR TRAINING AND TEST DATA
+# Initialize an empty DataFrame to store the combined data
+combined_data = pd.DataFrame()
+
+# Iterate over each instrument
+for instrument in CONFIG_TARGET_INSTRUMENTS:
+    # Download historical data using yfinance
+    historical_data = yf.download(instrument, start=start_date, end=end_date)
+    historical_data['instrument'] = instrument
+
+    # Reset the index to make 'Date' a column
+    historical_data = historical_data.reset_index()
+    #historical_data['Date'] = pd.to_datetime(historical_data['Date'], format='%Y-%m-%d %H:%M:%S').dt.strftime('%Y-%m-%d %H:%M:%S%z')
+    historical_data['Date'] = pd.to_datetime(historical_data['Date'], format='%Y-%m-%d %H:%M:%S').dt.strftime('%Y-%m-%d 16:00:00%z')
+    historical_data['Date'] = pd.to_datetime(historical_data['Date'], format='%Y-%m-%d %H:%M:%S%z').dt.tz_localize('US/Pacific')
+
+
+    # lower case columns
+    historical_data.columns = historical_data.columns.str.lower()
+
+    ####################################################
+
+
+    # Calculate the Typical Price
+    typical_price = (historical_data['high'] + historical_data['low'] + historical_data['close']) / 3
+
+    # Calculate the Traded Value (Typical Price * Volume)
+    traded_value = typical_price * historical_data['volume']
+
+    # Calculate Cumulative Traded Value
+    cumulative_traded_value = traded_value.cumsum()
+
+    # Calculate Cumulative Volume
+    cumulative_volume = historical_data['volume'].cumsum()
+
+    # Calculate VWAP
+    vwap = cumulative_traded_value / cumulative_volume
+
+    historical_data['weightedAverage'] = vwap
+    ####################################################
+
+    historical_data['quoteVolume'] = historical_data['volume'] * historical_data['weightedAverage']
+    ####################################################
+
+    # Merge the current instrument's data with the combined data
+    if combined_data.empty:
+        combined_data = historical_data
+    else:
+        combined_data=pd.concat([combined_data,historical_data], axis=0, ignore_index=True)
+
+# Sort the combined data by date
+combined_data = combined_data.sort_values(by='date')
+
+# Reset index for the final combined data
+combined_data = combined_data.reset_index(drop=True)
+
+# Define the desired order of columns
+desired_order = ['date', 'instrument', 'high', 'low', 'open', 'close', 'volume', 'quoteVolume','weightedAverage']
+combined_data = combined_data[desired_order]
+
+
+####################################################
+combined_data = combined_data.dropna()
+####################################################
+#rounding to 8 decimals
+combined_data = combined_data.round(8)
+#combined_data['date'] = pd.to_datetime(combined_data['date'])
+combined_data.to_csv('cleaned.csv', index=False)
+####################################################
+
+# Display the result
+combined_data
